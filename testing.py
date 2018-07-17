@@ -1,5 +1,6 @@
 import unittest
 import numpy as np
+import keras
 
 from pyESN import ESN
 
@@ -138,6 +139,17 @@ class InitArguments(unittest.TestCase):
             prediction_t = esn.predict(Xp)
             self.assertEqual(prediction_tr.shape, (N_samples, N_out))
             self.assertEqual(prediction_t.shape, (N_samples, N_out))
+
+    def test_keras_model(self):
+        """try the keras_model parameter"""
+        model = keras.models.Sequential()
+        model.add(keras.layers.Dense(units=200, activation='relu', input_dim=N+N_in))
+        model.add(keras.layers.Dense(units=N_out, activation='linear'))
+        model.compile(loss='mae', optimizer='adagrad')
+
+        esn = ESN(N_in, N_out, n_reservoir=N, keras_model=model)
+        esn.fit(self.X, self.y, epochs=20, verbose=0)
+        esn.predict(self.Xp)
 
 
 class Performance(unittest.TestCase):

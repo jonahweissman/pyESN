@@ -33,7 +33,7 @@ class ESN():
     def __init__(self, n_inputs, n_outputs, n_reservoir=200,
                  spectral_radius=0.95, sparsity=0, noise=0.001, input_shift=None,
                  input_scaling=None, teacher_forcing=True, feedback_scaling=None,
-                 teacher_scaling=None, teacher_shift=None,
+                 teacher_scaling=None, teacher_shift=None, keras_model=None,
                  out_activation=identity, inverse_out_activation=identity,
                  random_state=None, silent=True):
         """
@@ -51,6 +51,10 @@ class ESN():
             teacher_forcing: if True, feed the target back into output units
             teacher_scaling: factor applied to the target signal
             teacher_shift: additive term applied to the target signal
+            keras_model: trained to map the readout to the output.
+                         input_size must be n_reservoir+1; output_size should
+                         be the same as n_outputs. Call `compile` on the model
+                         before passing it as a parameter
             out_activation: output activation function (applied to the readout)
             inverse_out_activation: inverse of the output activation function
             random_state: positive integer seed, np.rand.RandomState object,
@@ -70,6 +74,7 @@ class ESN():
         self.teacher_scaling = teacher_scaling
         self.teacher_shift = teacher_shift
 
+        self.keras_model = keras_model
         self.out_activation = out_activation
         self.inverse_out_activation = inverse_out_activation
         self.random_state = random_state
@@ -151,7 +156,7 @@ class ESN():
             teacher_scaled = teacher_scaled / self.teacher_scaling
         return teacher_scaled
 
-    def fit(self, inputs, outputs, inspect=False):
+    def fit(self, inputs, outputs, inspect=False, **kwargs):
         """
         Collect the network's reaction to training data, train readout weights.
 
@@ -159,6 +164,7 @@ class ESN():
             inputs: array of dimensions (N_training_samples x n_inputs)
             outputs: array of dimension (N_training_samples x n_outputs)
             inspect: show a visualisation of the collected reservoir states
+            **kwargs: these arguments are passed to keras' `fit` method
 
         Returns:
             the network's output on the training data, using the trained weights
@@ -188,9 +194,21 @@ class ESN():
         transient = min(int(inputs.shape[1] / 10), 100)
         # include the raw inputs:
         extended_states = np.hstack((states, inputs_scaled))
-        # Solve for W_out:
-        self.W_out = np.dot(np.linalg.pinv(extended_states[transient:, :]),
-                            self.inverse_out_activation(teachers_scaled[transient:, :])).T
+
+        if self.keras_model is None:
+            # Solve for W_out:
+            self.W_out = np.dot(np.linalg.pinv(extended_states[transient:, :]),
+                  self.inverse_out_activation(teachers_scaled[transient:, :])).T
+            # apply learned weights to the collected states:
+            pred_train = self._unscale_teacher(self.out_activation(
+                np.dot(extended_states, self.W_out.T)))
+        else:
+            # train the output network on the states
+            self.keras_model.fit(extended_states[transient:, :],
+                                 teachers_scaled[transient:, :],
+                                 **kwargs)
+            pred_train = self._unscale_teacher(
+                                self.keras_model.predict(extended_states))
 
         # remember the last state for later:
         self.laststate = states[-1, :]
@@ -209,10 +227,6 @@ class ESN():
 
         if not self.silent:
             print("training error:")
-        # apply learned weights to the collected states:
-        pred_train = self._unscale_teacher(self.out_activation(
-            np.dot(extended_states, self.W_out.T)))
-        if not self.silent:
             print(np.sqrt(np.mean((pred_train - outputs)**2)))
         return pred_train
 
@@ -249,7 +263,12 @@ class ESN():
         for n in range(n_samples):
             states[
                 n + 1, :] = self._update(states[n, :], inputs[n + 1, :], outputs[n, :])
-            outputs[n + 1, :] = self.out_activation(np.dot(self.W_out,
-                                                           np.concatenate([states[n + 1, :], inputs[n + 1, :]])))
+            if self.keras_model is None:
+                outputs[n + 1, :] = self.out_activation(np.dot(self.W_out,
+                                       np.concatenate([states[n + 1, :], inputs[n + 1, :]])))
+            else:
+                # keras throws an error if we don't add an empty dimension
+                outputs[n + 1, :] = self.keras_model.predict(
+                    np.expand_dims(np.concatenate([states[n+1, :], inputs[n+1, :]]), axis=0))
 
-        return self._unscale_teacher(self.out_activation(outputs[1:]))
+        return self._unscale_teacher(outputs[1:])
