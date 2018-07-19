@@ -271,4 +271,6 @@ class ESN():
                 outputs[n + 1, :] = self.keras_model.predict(
                     np.expand_dims(np.concatenate([states[n+1, :], inputs[n+1, :]]), axis=0))
 
+        if self.keras_model is None:
+            outputs[1:] = self.out_activation(outputs[1:])
         return self._unscale_teacher(outputs[1:])
